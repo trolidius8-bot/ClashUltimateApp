@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ClashManager – Prototype</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/utc.js"></script>
+  <script>dayjs.extend(dayjs_plugin_utc)</script>
+  <script src="https://cdn.jsdelivr.net/npm/clipboard@2/dist/clipboard.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { height:100%; }
+    .tab-btn { @apply px-3 py-2 rounded-xl text-sm font-medium bg-gray-100 hover:bg-gray-200; }
+    .tab-btn.active { @apply bg-indigo-600 text-white hover:bg-indigo-600; }
+    .card { @apply bg-white rounded-2xl shadow p-4; }
+    .field { @apply border rounded-lg px-3 py-2 w-full; }
+    .badge { @apply inline-block text-xs px-2 py-1 rounded-lg bg-gray-100; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-800">
+  <div id="root" class="max-w-6xl mx-auto p-4"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useState } = React;
+
+    // --- Sample seed data (you can replace with Google Sheets CSV URLs in Settings) ---
+    const seed = {
+      clans: [
+        { clan_id:"CLN001", clan_name:"Iberian Kings", short_tag:"#IBK", family_id:"FAM001"},
+        { clan_id:"CLN002", clan_name:"Iberian Queens", short_tag:"#IBQ", family_id:"FAM001"},
+      ],
+      players: [
+        { player_id:"PLY001", player_tag:"#AAA111", name:"Álvaro", role:"CWL Core", clan_id:"CLN001", th_level:16, heroes:"BK85,AQ85,GW65,RC35", pets:"Fenix10,Diggy10" },
+        { player_id:"PLY002", player_tag:"#BBB222", name:"Sara", role:"Backup", clan_id:"CLN001", th_level:15, heroes:"BK80,AQ80,GW60,RC30", pets:"Frosty10,Unicorn10" },
+      ],
+      wars: [
+        { war_id:"WAR001", clan_id:"CLN001", opponent:"Nordic Wolves", start_utc:"2025-09-24 18:00:00", end_utc:"2025-09-25 18:00:00", size:15 },
+      ],
+      war_attacks: [
+        { war_id:"WAR001", attacker_tag:"#AAA111", defender_name:"Thor", stars:3, destruction:98, used:1 },
+        { war_id:"WAR001", attacker_tag:"#BBB222", defender_name:"Odin", stars:2, destruction:74, used:1 },
+      ],
+      cwl_rounds: [
+        { cwl_id:"CWL2025-09", round:1, clan_id:"CLN001", opponent:"Celtic Heroes", stars:38, destruction_pct:92.1 }
+      ],
+      notes: [
+        { note_id:"N001", clan_id:"CLN001", title:"Rules", content:"Attack in first 12h. Use both hits." }
+      ]
+    };
+
+    // --- helpers ---
+    const uid = (p='ID') => p + Math.random().toString(36).slice(2,8);
+    const roles = ["CWL Core","Backup","Inactive"];
+
+    function useLocalState(key, initial){
+      const [st, setSt] = useState(() => {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw ? JSON.parse(raw) : initial;
+        } catch { return initial }
+      });
+      useEffect(()=>localStorage.setItem(key, JSON.stringify(st)), [key, st]);
+      return [st, setSt];
+    }
+
+    function Section({title, children, right}){
+      return (
+        <div className="card">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">{title}</h2>
+            {right}
+          </div>
+          {children}
+        </div>
+      );
+    }
+
+    function Home({setTab}){
+      return (
+        <div className="grid md:grid-cols-2 gap-4">
+          <Section title="Quick Navigation">
+            <div className="flex gap-2">
+              <button className="tab-btn" onClick={()=>setTab('clan')}>Clan Family</button>
+              <button className="tab-btn" onClick={()=>setTab('war')}>War & CWL</button>
+              <button className="tab-btn" onClick={()=>setTab('player')}>Player Stats</button>
+            </div>
+          </Section>
+          <Section title="Game News (manual placeholder)">
+            <ul className="list-disc pl-5 text-sm">
+              <li>New CWL season starts next week.</li>
+              <li>Balance changes planned: check Supercell blog.</li>
+            </ul>
+          </Section>
+          <Section title="Meta Armies">
+            <div className="text-sm">E.g. EDrag Rage • Queen Charge Hogs • Blizzard Lalo <span className="badge ml-2">copy/share soon</span></div>
+          </Section>
+          <Section title="Free War/League Bases">
+            <div className="text-sm">Add your own links to base layouts here.</div>
+          </Section>
+        </div>
+      );
+    }
+
+    function Clan({db, setDb}){
+      const clans = db.clans;
+      const [clanId, setClanId] = useLocalState('clan.current', clans[0]?.clan_id || '');
+
+      const players = useMemo(()=>db.players.filter(p=>p.clan_id===clanId),[db.players,clanId]);
+
+      const [newP, setNewP] = useState({ player_tag:'', name:'', th_level:16, role:roles[0]});
+
+      const updateRole = (player_id, role)=>{
+        setDb(s=>({...s, players: s.players.map(p=>p.player_id===player_id?{...p, role}:p)}));
+      }
+      const addPlayer = ()=>{
+        if(!newP.player_tag || !newP.name) return alert('Tag and Name required');
+        setDb(s=>({...s, players:[...s.players, {
+          player_id: uid('PLY'), clan_id: clanId, ...newP
+        }]}));
+        setNewP({ player_tag:'', name:'', th_level:16, role:roles[0]});
+      }
+
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="Clan Selector" right={<span className="badge">Family FAM001</span>}>
+            <div className="flex gap-2 items-center">
+              <label className="text-sm">Clan</label>
+              <select className="field max-w-xs" value={clanId} onChange={e=>setClanId(e.target.value)}>
+                {clans.map(c=> <option key={c.clan_id} value={c.clan_id}>{c.clan_name} ({c.short_tag})</option>)}
+              </select>
+            </div>
+          </Section>
+
+          <Section title="Add Player">
+            <div className="grid grid-cols-2 gap-2">
+              <input className="field" placeholder="#PlayerTag" value={newP.player_tag} onChange={e=>setNewP({...newP, player_tag:e.target.value})} />
+              <input className="field" placeholder="Name" value={newP.name} onChange={e=>setNewP({...newP, name:e.target.value})} />
+              <input className="field" placeholder="TH level" type="number" value={newP.th_level} onChange={e=>setNewP({...newP, th_level:parseInt(e.target.value||'0',10)})} />
+              <select className="field" value={newP.role} onChange={e=>setNewP({...newP, role:e.target.value})}>
+                {roles.map(r=> <option key={r} value={r}>{r}</option>)}
+              </select>
+              <button className="tab-btn active" onClick={addPlayer}>Add</button>
+            </div>
+          </Section>
+
+          <Section title="Players">
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="py-2">Name</th>
+                    <th>Tag</th>
+                    <th>TH</th>
+                    <th>Role</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {players.map(p=> (
+                    <tr key={p.player_id} className="border-t">
+                      <td className="py-2">{p.name}</td>
+                      <td>{p.player_tag}</td>
+                      <td>{p.th_level}</td>
+                      <td>
+                        <select className="field" value={p.role} onChange={e=>updateRole(p.player_id, e.target.value)}>
+                          {roles.map(r=> <option key={r} value={r}>{r}</option>)}
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+        </div>
+      );
+    }
+
+    function War({db, setDb}){
+      const clans = db.clans;
+      const [clanId, setClanId] = useLocalState('war.currentClan', clans[0]?.clan_id||'');
+      const wars = useMemo(()=>db.wars.filter(w=>w.clan_id===clanId),[db.wars,clanId]);
+      const [warId, setWarId] = useLocalState('war.currentWar', wars[0]?.war_id||'');
+
+      useEffect(()=>{ if(wars.length && !wars.find(w=>w.war_id===warId)) setWarId(wars[0].war_id) },[wars]);
+
+      const attacks = useMemo(()=>db.war_attacks.filter(a=>a.war_id===warId),[db.war_attacks,warId]);
+
+      const [newA, setNewA] = useState({ attacker_tag:'', defender_name:'', stars:0, destruction:0 });
+
+      const addAttack = ()=>{
+        if(!warId) return alert('Select war');
+        setDb(s=>({...s, war_attacks:[...s.war_attacks, { war_id:warId, ...newA, stars:parseInt(newA.stars,10)||0, destruction:parseFloat(newA.destruction)||0, used:1 }]}));
+        setNewA({ attacker_tag:'', defender_name:'', stars:0, destruction:0 });
+      }
+
+      const war = wars.find(w=>w.war_id===warId);
+      const stars = attacks.reduce((s,a)=>s+(a.stars||0),0);
+      const used = attacks.length;
+      const size = war?.size || 0;
+      const endIn = war? dayjs.utc(war.end_utc).diff(dayjs.utc(), 'minute') : null;
+
+      const exportText = `War: ${war? war.opponent : '-'}\nStars: ${stars} | Attacks used: ${used}/${size*2}\n` + attacks.map(a=>`- ${a.attacker_tag} -> ${a.defender_name}: ${a.stars}⭐ ${a.destruction}%`).join('\n');
+
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="Select Clan & War">
+            <div className="flex gap-2">
+              <select className="field" value={clanId} onChange={e=>setClanId(e.target.value)}>
+                {clans.map(c=> <option key={c.clan_id} value={c.clan_id}>{c.clan_name}</option>)}
+              </select>
+              <select className="field" value={warId} onChange={e=>setWarId(e.target.value)}>
+                {wars.map(w=> <option key={w.war_id} value={w.war_id}>{w.opponent} (size {w.size})</option>)}
+              </select>
+            </div>
+            {war && (
+              <div className="mt-3 text-sm">
+                <div>Ends in: <span className="badge">{endIn!==null? `${Math.max(0, Math.floor(endIn/60))}h ${Math.max(0,endIn%60)}m`:'-'}</span></div>
+                <div>Stars: <span className="badge">{stars}</span> · Attacks used: <span className="badge">{used}/{(war.size||0)*2}</span></div>
+              </div>
+            )}
+          </Section>
+
+          <Section title="Log Attack">
+            <div className="grid grid-cols-2 gap-2">
+              <input className="field" placeholder="#AttackerTag" value={newA.attacker_tag} onChange={e=>setNewA({...newA, attacker_tag:e.target.value})} />
+              <input className="field" placeholder="Defender name/#" value={newA.defender_name} onChange={e=>setNewA({...newA, defender_name:e.target.value})} />
+              <input className="field" placeholder="Stars (0-3)" type="number" value={newA.stars} onChange={e=>setNewA({...newA, stars:e.target.value})} />
+              <input className="field" placeholder="Destruction %" type="number" step="0.1" value={newA.destruction} onChange={e=>setNewA({...newA, destruction:e.target.value})} />
+              <button className="tab-btn active" onClick={addAttack}>Save</button>
+              <button className="tab-btn" id="copyBtn" data-clipboard-text={exportText}>Copy report</button>
+            </div>
+            <script>new ClipboardJS('#copyBtn');</script>
+          </Section>
+
+          <Section title="Attacks">
+            <div className="overflow-auto max-h-80">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="py-2">Attacker</th>
+                    <th>Defender</th>
+                    <th>Stars</th>
+                    <th>%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {attacks.map((a,idx)=> (
+                    <tr key={idx} className="border-t">
+                      <td className="py-2">{a.attacker_tag}</td>
+                      <td>{a.defender_name}</td>
+                      <td>{a.stars}</td>
+                      <td>{a.destruction}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+        </div>
+      );
+    }
+
+    function Player({db, setDb}){
+      const [tag, setTag] = useLocalState('player.tag','');
+      const player = useMemo(()=> db.players.find(p=>p.player_tag===tag) || null,[db.players, tag]);
+      const [raw, setRaw] = useState('');
+      const [parsed, setParsed] = useState(null);
+
+      const analyze = ()=>{
+        try {
+          const j = JSON.parse(raw);
+          setParsed(j);
+        } catch {
+          alert('Invalid JSON');
+        }
+      }
+
+      const suggestion = useMemo(()=>{
+        const h = (parsed?.heroes)||{}; // expected shape
+        const heroLevels = Object.values(h);
+        if(heroLevels.length===0) return 'Focus on upgrading heroes first (Queen/Warden).';
+        const min = Math.min(...heroLevels);
+        return min < 80 ? 'Prioritize bringing all heroes to 80+ for war consistency.' : 'Start rounding troops relevant to your favorite army.';
+      }, [parsed]);
+
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="Select Player">
+            <div className="flex gap-2 items-center">
+              <input className="field" placeholder="#PlayerTag" value={tag} onChange={e=>setTag(e.target.value)} />
+              {player && <span className="badge">{player.name} · TH{player.th_level}</span>}
+            </div>
+          </Section>
+
+          <Section title="Paste JSON (optional)">
+            <textarea className="field h-40" placeholder='{"heroes":{"AQ":85,"BK":85,"GW":65,"RC":35}}' value={raw} onChange={e=>setRaw(e.target.value)}></textarea>
+            <button className="tab-btn active mt-2" onClick={analyze}>Analyze</button>
+            {parsed && (
+              <div className="mt-3 text-sm">
+                <div className="font-medium">Suggestion:</div>
+                <div>{suggestion}</div>
+              </div>
+            )}
+          </Section>
+
+          <Section title="Overview">
+            {player ? (
+              <ul className="text-sm space-y-1">
+                <li><b>Name:</b> {player.name}</li>
+                <li><b>Tag:</b> {player.player_tag}</li>
+                <li><b>TH:</b> {player.th_level}</li>
+                <li><b>Heroes:</b> {player.heroes || 'n/a'}</li>
+                <li><b>Pets:</b> {player.pets || 'n/a'}</li>
+              </ul>
+            ) : <div className="text-sm">Enter a tag to view saved local data.</div>}
+          </Section>
+        </div>
+      );
+    }
+
+    function Settings({db, setDb}){
+      const [urls, setUrls] = useLocalState('sheet.urls', { clans:'', players:'', wars:'', war_attacks:'', cwl_rounds:'', notes:''});
+
+      const importCsv = (key)=>{
+        const url = urls[key];
+        if(!url) return alert('Provide a published CSV URL');
+        Papa.parse(url, { download:true, header:true, complete: (res)=>{
+          const data = res.data.filter(x=>Object.keys(x).length>1); // naive clean
+          setDb(s=> ({...s, [key]: data}));
+          alert(`Imported ${data.length} rows into ${key}`);
+        }});
+      }
+
+      return (
+        <div className="grid md:grid-cols-2 gap-4">
+          {Object.keys(urls).map(k=> (
+            <Section key={k} title={`Sheet: ${k}`}>
+              <input className="field" placeholder="Published CSV URL" value={urls[k]} onChange={e=>setUrls({...urls, [k]: e.target.value})} />
+              <button className="tab-btn active mt-2" onClick={()=>importCsv(k)}>Import</button>
+            </Section>
+          ))}
+        </div>
+      );
+    }
+
+    function App(){
+      const [db, setDb] = useLocalState('cm.db', seed);
+      const [tab, setTab] = useLocalState('cm.tab','home');
+
+      return (
+        <div className="space-y-4">
+          <header className="flex items-center justify-between">
+            <h1 className="text-2xl font-bold">ClashManager – Prototype</h1>
+            <div className="flex gap-2">
+              <button className={`tab-btn ${tab==='home'?'active':''}`} onClick={()=>setTab('home')}>Home</button>
+              <button className={`tab-btn ${tab==='clan'?'active':''}`} onClick={()=>setTab('clan')}>Clan Family</button>
+              <button className={`tab-btn ${tab==='war'?'active':''}`} onClick={()=>setTab('war')}>War & CWL</button>
+              <button className={`tab-btn ${tab==='player'?'active':''}`} onClick={()=>setTab('player')}>Player Stats</button>
+              <button className={`tab-btn ${tab==='settings'?'active':''}`} onClick={()=>setTab('settings')}>Settings</button>
+            </div>
+          </header>
+
+          {tab==='home' && <Home setTab={setTab}/>} 
+          {tab==='clan' && <Clan db={db} setDb={setDb}/>} 
+          {tab==='war' && <War db={db} setDb={setDb}/>} 
+          {tab==='player' && <Player db={db} setDb={setDb}/>} 
+          {tab==='settings' && <Settings db={db} setDb={setDb}/>} 
+
+          <footer className="text-xs text-slate-500 pt-4">Local prototype. Data persists in your browser (localStorage). Import from Google Sheets in Settings.</footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
